@@ -66,23 +66,65 @@ static void MX_ADC1_Init(void);
 #define VOUT_ADC_FACTOR 0.01147460938
 #define IOUT_ADC_FACTOR 0.0024414062
 
+#define HRTIM_PERIOD 10240
+#define MAX_DUTY_CYCLE (HRTIM_PERIOD * 0.8f) // จำกัด Duty สูงสุดที่ 95% เพื่อความปลอดภัย
+
+typedef struct {
+
+    float Kp;
+    float Ki;
+    float Ts;
+    float integral;
+    float out_max;
+
+} PI_Controller;
+
 uint32_t new_duty_cycle_value = 2000;
 uint32_t count_check = 0;
 uint16_t adc_adj = 0;
 uint16_t adc_vin = 0;
 uint16_t adc_vo = 0;
 uint16_t adc_io = 0;
+uint16_t even_loop = 0;
 
 float v_adj = 0.0f;
 float v_in = 0.0f;
 float v_out = 0.0f;
 float i_out = 0.0f;
 float i_out_offset = 0.0244140625f;
+float target_current = 0.0f;
+float target_voltage = 0.0f;
 
+//PI_Controller pi_current = {0.042412f, 86.70796f, 0.000005f, 0.0f, 4.0f};
+PI_Controller pi_current = {5.0f, 26000.0f, 0.000005f, 0.0f, MAX_DUTY_CYCLE};
+PI_Controller pi_voltage = {0.03f, 100.0f, 0.00005f, 0.0f, 4.0f};
+
+
+float update_pi(PI_Controller *pi, float error) {
+
+    float p_term = pi->Kp * error;
+    pi->integral += pi->Ki * pi->Ts * error;
+    if (pi->integral > pi->out_max) pi->integral = pi->out_max;
+    else if (pi->integral < -pi->out_max) pi->integral = -pi->out_max;
+    float output = p_term + pi->integral;
+    if (output > pi->out_max) output = pi->out_max;
+    else if (output < -pi->out_max) output = -pi->out_max;
+
+    return output;
+}
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	if (htim->Instance == TIM1){
+		target_current = update_pi(&pi_voltage,target_voltage - v_out);
 
+//		even_loop++;
+//		if(even_loop >= 20){
+//			even_loop = 0;
+//			count_check++;
+//			if(count_check <5000){
+//				target_voltage += 0.001f;
+//			}
+//		}
 	}
 
 }
@@ -98,9 +140,11 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef* hadc){
 	v_out = adc_vo*VOUT_ADC_FACTOR;
 	i_out = adc_io*IOUT_ADC_FACTOR - i_out_offset;
 
+	float pid_output = update_pi(&pi_current, target_current - i_out);
+	if (pid_output < 0.0f) pid_output = 0.0f;
+	new_duty_cycle_value = (uint32_t)pid_output;
 
 
-	count_check++;
 	__HAL_HRTIM_SETCOMPARE(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_COMPAREUNIT_1, new_duty_cycle_value);
 }
 
@@ -156,6 +200,7 @@ int main(void)
 
   HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
   HAL_ADCEx_InjectedStart_IT(&hadc1);
+
 
   /* USER CODE END 2 */
 
