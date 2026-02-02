@@ -21,7 +21,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "controller_app.h"
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,6 +47,10 @@ HRTIM_HandleTypeDef hhrtim1;
 
 TIM_HandleTypeDef htim1;
 
+UART_HandleTypeDef huart1;
+DMA_HandleTypeDef hdma_usart1_rx;
+DMA_HandleTypeDef hdma_usart1_tx;
+
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -53,31 +58,45 @@ TIM_HandleTypeDef htim1;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_HRTIM1_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_ADC1_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#define VIN_ADC_FACTOR 0.01228027344
+
+#define VOLTAGE_ADC_FACTOR 3.3f/4096.0f
+#define R1_VIN_DIVIDER 3300.0f
+#define R2_VIN_DIVIDER 47000.0f
+
+//#define VIN_ADC_FACTOR 0.01228027344
+#define VIN_ADC_FACTOR VOLTAGE_ADC_FACTOR*(R1_VIN_DIVIDER+R2_VIN_DIVIDER)/R1_VIN_DIVIDER
+
+#define RF_VOUT 3300.0f
+#define RINV_VOUT 47000.0f
+#define VOUT_GAIN RF_VOUT/RINV_VOUT
+
 #define VOUT_ADC_FACTOR 0.01147460938
+//#define VOUT_ADC_FACTOR VOLTAGE_ADC_FACTOR/VOUT_GAIN
+
+#define RF_IOUT 33000.0f
+#define RINV_IOUT 100.0f
+#define IOUT_GAIN RF_IOUT/RINV_IOUT
+#define RSHUNT_IOUT 0.001f
+
 #define IOUT_ADC_FACTOR 0.0024414062
+//#define IOUT_ADC_FACTOR VOLTAGE_ADC_FACTOR/(IOUT_GAIN*RSHUNT_IOUT)
 
 #define HRTIM_PERIOD 10240
-#define MAX_DUTY_CYCLE (HRTIM_PERIOD * 0.8f) // จำกัด Duty สูงสุดที่ 95% เพื่อความปลอดภัย
+#define MAX_DUTY_CYCLE (HRTIM_PERIOD * 0.95f) // จำกัด Duty สูงสุดที่ 95% เพื่อความปลอดภัย
 
-typedef struct {
-
-    float Kp;
-    float Ki;
-    float Ts;
-    float integral;
-    float out_max;
-
-} PI_Controller;
+#define VOLTAGE_OUTPUT_LIMIT 8.0f //Volt
+#define CURRENT_OUTPUT_LIMIT 0.25f  //Amp
 
 uint32_t new_duty_cycle_value = 2000;
 uint32_t count_check = 0;
@@ -87,6 +106,14 @@ uint16_t adc_vo = 0;
 uint16_t adc_io = 0;
 uint16_t even_loop = 0;
 
+uint8_t calibration_flag = 0;
+
+uint16_t controller_mode = VOLTAGE_CONTROL_MODE;
+CONTROL_MODE last_mode = UNKNOW_CONTROL_MODE;
+
+uint32_t previous_milliseccond = 0;
+uint32_t period_time = 20;
+
 float v_adj = 0.0f;
 float v_in = 0.0f;
 float v_out = 0.0f;
@@ -94,11 +121,14 @@ float i_out = 0.0f;
 float i_out_offset = 0.0244140625f;
 float target_current = 0.0f;
 float target_voltage = 0.0f;
+float sp_input = 0.0f;
 
 //PI_Controller pi_current = {0.042412f, 86.70796f, 0.000005f, 0.0f, 4.0f};
 PI_Controller pi_current = {5.0f, 26000.0f, 0.000005f, 0.0f, MAX_DUTY_CYCLE};
 PI_Controller pi_voltage = {0.03f, 100.0f, 0.00005f, 0.0f, 4.0f};
 
+uint8_t uart_rx_buf[64];
+uint16_t uart_rx_buf_size = 0;
 
 float update_pi(PI_Controller *pi, float error) {
 
@@ -113,28 +143,59 @@ float update_pi(PI_Controller *pi, float error) {
     return output;
 }
 
+
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size){
+
+
+	uart_rx_buf_size = Size;
+	parse_command((char*)uart_rx_buf);
+	memset(uart_rx_buf, 0, sizeof(uart_rx_buf));
+	HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart_rx_buf, 64);
+	__HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
+    if(huart->ErrorCode & HAL_UART_ERROR_ORE) {
+        // เกิด Overrun Error - ข้อมูลมาเร็วเกินไปจนรับไม่ทัน
+        __HAL_UART_CLEAR_OREFLAG(huart); // เคลียร์ Flag เพื่อให้ทำงานต่อได้
+    }
+    // หลังจากเคลียร์ Error ต้องสั่งเริ่มรับข้อมูลใหม่เสมอ
+    HAL_UARTEx_ReceiveToIdle_DMA(huart, uart_rx_buf, 64);
+}
+
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	if (htim->Instance == TIM1){
-		target_current = update_pi(&pi_voltage,target_voltage - v_out);
 
-//		even_loop++;
-//		if(even_loop >= 20){
-//			even_loop = 0;
-//			count_check++;
-//			if(count_check <5000){
-//				target_voltage += 0.001f;
-//			}
-//		}
+        switch (controller_mode){
+        case VOLTAGE_CONTROL_MODE :
+        	if (sp_input > 8)sp_input = 8.0f;
+
+        	if (sp_input > target_voltage){
+        		target_voltage++;
+        	}
+        	else if (sp_input < target_voltage){
+        		target_voltage--;
+        	}
+        	target_current = update_pi(&pi_voltage,target_voltage - v_out);
+        	break;
+        case CURRENT_CONTROL_MODE :
+        	if (sp_input > 0.25f)sp_input = 0.25f;
+        	target_current = sp_input;
+        	break;
+	    default:
+	        break;
+        }
+
 	}
 
 }
 
 void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef* hadc){
 
-	adc_adj = HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_1);
-	adc_vin = HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_2);
-	adc_io = HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_3);
-	adc_vo = HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_4);
+	adc_adj = hadc1.Instance->JDR1; // อ่านค่าจาก Injected Data Register 1 ตรงๆ
+	adc_vin = hadc1.Instance->JDR2;
+	adc_io  = hadc1.Instance->JDR3;
+	adc_vo  = hadc1.Instance->JDR4;
 
 	v_in = adc_vin*VIN_ADC_FACTOR;
 	v_out = adc_vo*VOUT_ADC_FACTOR;
@@ -180,9 +241,11 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_HRTIM1_Init();
   MX_TIM1_Init();
   MX_ADC1_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
 
@@ -198,9 +261,11 @@ int main(void)
 
   HAL_TIM_Base_Start_IT(&htim1);
 
+  HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart_rx_buf, 64);
+  __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+
   HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
   HAL_ADCEx_InjectedStart_IT(&hadc1);
-
 
   /* USER CODE END 2 */
 
@@ -211,7 +276,66 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+		if (HAL_GetTick() - previous_milliseccond > period_time){
 
+			float plot_data[16];
+			uint16_t len = 0;
+
+			switch (controller_mode) {
+			case VOLTAGE_CONTROL_MODE:
+
+				plot_data[len++] = target_voltage;
+				plot_data[len++] = v_out;
+				break;
+			case CURRENT_CONTROL_MODE:
+				plot_data[len++] = target_current;
+				plot_data[len++] = i_out;
+				break;
+			case CAL_SENSOR:
+//				plot_data[len++] = theta_mech;
+//				plot_data[len++] = theta_elec;
+				break;
+			default:
+				break;
+			}
+
+			send_data_float(plot_data, len);
+		    if (controller_mode != last_mode) {
+		    	last_mode = controller_mode;
+
+		    	HAL_Delay(2);
+		    	print_mode(controller_mode);
+		    	erase_graph(); HAL_Delay(2);
+				switch (controller_mode) {
+				case VOLTAGE_CONTROL_MODE:
+					send_data_float(plot_data, len); HAL_Delay(2);
+					change_title("VOLTAGE CONTROL MODE"); HAL_Delay(2);
+					change_legend(0, "target"); HAL_Delay(2);
+					change_legend(1, "Voltage"); HAL_Delay(2);
+					break;
+				case CURRENT_CONTROL_MODE:
+					send_data_float(plot_data, len); HAL_Delay(2);
+					change_title("CURRENT CONTROL MODE"); HAL_Delay(2);
+					change_legend(0, "target"); HAL_Delay(2);
+					change_legend(1, "Current"); HAL_Delay(2);
+					break;
+				case CAL_SENSOR:
+					send_data_float(plot_data, len); HAL_Delay(2);
+					change_title("CALIBRATE SENSOR MODE"); HAL_Delay(2);
+//					change_legend(0, "theta mech"); HAL_Delay(2);
+//					change_legend(1, "theta elec"); HAL_Delay(2);
+					calibration_flag = 0;
+					HAL_Delay(100);
+
+					HAL_Delay(100);
+					calibration_flag = 1;
+					break;
+				default:
+					break;
+				}
+		    }
+		    previous_milliseccond = HAL_GetTick() ;
+		}
   }
   /* USER CODE END 3 */
 }
@@ -253,8 +377,9 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_HRTIM1|RCC_PERIPHCLK_TIM1
-                              |RCC_PERIPHCLK_ADC12;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_HRTIM1|RCC_PERIPHCLK_USART1
+                              |RCC_PERIPHCLK_TIM1|RCC_PERIPHCLK_ADC12;
+  PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK1;
   PeriphClkInit.Adc12ClockSelection = RCC_ADC12PLLCLK_DIV1;
   PeriphClkInit.Tim1ClockSelection = RCC_TIM1CLK_PLLCLK;
   PeriphClkInit.Hrtim1ClockSelection = RCC_HRTIM1CLK_PLLCLK;
@@ -405,7 +530,7 @@ static void MX_HRTIM1_Init(void)
     Error_Handler();
   }
   pTimeBaseCfg.Period = 10240;
-  pTimeBaseCfg.RepetitionCounter = 0x00;
+  pTimeBaseCfg.RepetitionCounter = 10-1;
   pTimeBaseCfg.PrescalerRatio = HRTIM_PRESCALERRATIO_MUL16;
   pTimeBaseCfg.Mode = HRTIM_MODE_CONTINUOUS;
   if (HAL_HRTIM_TimeBaseConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, &pTimeBaseCfg) != HAL_OK)
@@ -504,9 +629,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 0;
+  htim1.Init.Prescaler = 64-1;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 3200-1;
+  htim1.Init.Period = 500-1;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -533,6 +658,60 @@ static void MX_TIM1_Init(void)
 }
 
 /**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel4_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
+  /* DMA1_Channel5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -545,6 +724,7 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 

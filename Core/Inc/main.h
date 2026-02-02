@@ -37,6 +37,23 @@ extern "C" {
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
 
+typedef struct {
+
+    float Kp;
+    float Ki;
+    float Ts;
+    float integral;
+    float out_max;
+
+} PI_Controller;
+
+typedef enum {
+	VOLTAGE_CONTROL_MODE,
+	CURRENT_CONTROL_MODE,
+	CAL_SENSOR,
+	UNKNOW_CONTROL_MODE
+} CONTROL_MODE;
+
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
