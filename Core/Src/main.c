@@ -118,14 +118,14 @@ float v_adj = 0.0f;
 float v_in = 0.0f;
 float v_out = 0.0f;
 float i_out = 0.0f;
-float i_out_offset = 0.0244140625f;
+float i_out_offset = 0.0341796875f;
 float target_current = 0.0f;
 float target_voltage = 0.0f;
 float sp_input = 0.0f;
 
 //PI_Controller pi_current = {0.042412f, 86.70796f, 0.000005f, 0.0f, 4.0f};
-PI_Controller pi_current = {5.0f, 26000.0f, 0.000005f, 0.0f, MAX_DUTY_CYCLE};
-PI_Controller pi_voltage = {0.03f, 100.0f, 0.00005f, 0.0f, 4.0f};
+PI_Controller pi_current = {40.0f, 100000.0f, 0.00005f, 0.0f, MAX_DUTY_CYCLE};
+PI_Controller pi_voltage = {0.1f, 40.0f, 0.0005f, 0.0f, 4.5f};
 
 uint8_t uart_rx_buf[64];
 uint16_t uart_rx_buf_size = 0;
@@ -168,13 +168,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
         switch (controller_mode){
         case VOLTAGE_CONTROL_MODE :
-        	if (sp_input > 8)sp_input = 8.0f;
+        	if (sp_input > 28.0)sp_input = 28.0f;
 
         	if (sp_input > target_voltage){
-        		target_voltage++;
+        		target_voltage = target_voltage + 0.01;
         	}
         	else if (sp_input < target_voltage){
-        		target_voltage--;
+        		target_voltage = target_voltage - 0.01;
         	}
         	target_current = update_pi(&pi_voltage,target_voltage - v_out);
         	break;
@@ -207,6 +207,7 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef* hadc){
 
 
 	__HAL_HRTIM_SETCOMPARE(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_COMPAREUNIT_1, new_duty_cycle_value);
+
 }
 
 
@@ -718,6 +719,7 @@ static void MX_DMA_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
   /* USER CODE END MX_GPIO_Init_1 */
@@ -725,6 +727,16 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, LED_G_Pin|LED_Y_Pin|LED_R_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : LED_G_Pin LED_Y_Pin LED_R_Pin */
+  GPIO_InitStruct.Pin = LED_G_Pin|LED_Y_Pin|LED_R_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 

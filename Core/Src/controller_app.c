@@ -19,7 +19,8 @@ extern uint16_t controller_mode;
 extern float sp_input;
 extern PI_Controller pi_current;
 extern PI_Controller pi_voltage;
-
+extern float target_current;
+extern float target_voltage;
 
 char usb_send_buff[128];
 
@@ -351,6 +352,9 @@ void parse_command(char *cmd) {
 		if (mode <= UNKNOW_CONTROL_MODE) {
     	controller_mode = mode;
     	sp_input = 0;
+    	target_current = 0;
+    	target_voltage = 0;
+
 		}
 	}
 //	else if (strstr(cmd, "ratio") != NULL) {
