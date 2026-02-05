@@ -43,6 +43,8 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 
+CAN_HandleTypeDef hcan;
+
 HRTIM_HandleTypeDef hhrtim1;
 
 TIM_HandleTypeDef htim1;
@@ -63,6 +65,7 @@ static void MX_HRTIM1_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_CAN_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -121,7 +124,7 @@ float i_out = 0.0f;
 float i_out_offset = 0.0341796875f;
 float target_current = 0.0f;
 float target_voltage = 0.0f;
-float sp_input = 0.0f;
+float sp_input = 5.0f;
 
 //PI_Controller pi_current = {0.042412f, 86.70796f, 0.000005f, 0.0f, 4.0f};
 PI_Controller pi_current = {40.0f, 100000.0f, 0.00005f, 0.0f, MAX_DUTY_CYCLE};
@@ -129,6 +132,14 @@ PI_Controller pi_voltage = {0.1f, 40.0f, 0.0005f, 0.0f, 4.5f};
 
 uint8_t uart_rx_buf[64];
 uint16_t uart_rx_buf_size = 0;
+
+CAN_TxHeaderTypeDef can_tx_header = {0x123 , 0, CAN_ID_STD , CAN_RTR_DATA , 8};
+uint8_t can_tx_data[8] = {0};
+uint32_t can_tx_mailbox;
+
+CAN_RxHeaderTypeDef can_rx_header = {0};
+uint8_t can_rx_data[8] = {0};
+uint32_t can_rx_mailbox;
 
 float update_pi(PI_Controller *pi, float error) {
 
@@ -211,6 +222,16 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef* hadc){
 }
 
 
+
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan){
+	if (hcan->Instance == CAN){
+		HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &can_rx_header, can_rx_data);
+		count_check++;
+		HAL_GPIO_TogglePin(LED_G_GPIO_Port, LED_G_Pin);
+	}
+}
+
+
 /* USER CODE END 0 */
 
 /**
@@ -247,6 +268,7 @@ int main(void)
   MX_TIM1_Init();
   MX_ADC1_Init();
   MX_USART1_UART_Init();
+  MX_CAN_Init();
   /* USER CODE BEGIN 2 */
 
 
@@ -268,6 +290,9 @@ int main(void)
   HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
   HAL_ADCEx_InjectedStart_IT(&hadc1);
 
+  HAL_CAN_Start(&hcan);
+  HAL_CAN_ActivateNotification(&hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -278,6 +303,9 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 		if (HAL_GetTick() - previous_milliseccond > period_time){
+
+
+			HAL_CAN_AddTxMessage(&hcan, &can_tx_header, can_tx_data, &can_tx_mailbox);
 
 			float plot_data[16];
 			uint16_t len = 0;
@@ -488,6 +516,60 @@ static void MX_ADC1_Init(void)
 }
 
 /**
+  * @brief CAN Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_CAN_Init(void)
+{
+
+  /* USER CODE BEGIN CAN_Init 0 */
+
+  /* USER CODE END CAN_Init 0 */
+
+  /* USER CODE BEGIN CAN_Init 1 */
+
+  /* USER CODE END CAN_Init 1 */
+  hcan.Instance = CAN;
+  hcan.Init.Prescaler = 8;
+  hcan.Init.Mode = CAN_MODE_NORMAL;
+  hcan.Init.SyncJumpWidth = CAN_SJW_1TQ;
+  hcan.Init.TimeSeg1 = CAN_BS1_2TQ;
+  hcan.Init.TimeSeg2 = CAN_BS2_1TQ;
+  hcan.Init.TimeTriggeredMode = DISABLE;
+  hcan.Init.AutoBusOff = DISABLE;
+  hcan.Init.AutoWakeUp = DISABLE;
+  hcan.Init.AutoRetransmission = DISABLE;
+  hcan.Init.ReceiveFifoLocked = DISABLE;
+  hcan.Init.TransmitFifoPriority = DISABLE;
+  if (HAL_CAN_Init(&hcan) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN CAN_Init 2 */
+
+  CAN_FilterTypeDef sFilterConfig;
+
+	sFilterConfig.FilterBank = 0;
+	sFilterConfig.FilterMode = CAN_FILTERMODE_IDMASK;
+	sFilterConfig.FilterScale = CAN_FILTERSCALE_32BIT;
+	sFilterConfig.FilterIdHigh = 0x0000;
+	sFilterConfig.FilterIdLow = 0x0000;
+	sFilterConfig.FilterMaskIdHigh = 0x0000;
+	sFilterConfig.FilterMaskIdLow = 0x0000;
+	sFilterConfig.FilterFIFOAssignment = CAN_RX_FIFO0;
+	sFilterConfig.FilterActivation = ENABLE;
+	sFilterConfig.SlaveStartFilterBank = 14;
+
+	if (HAL_CAN_ConfigFilter(&hcan, &sFilterConfig) != HAL_OK)
+	{
+	  Error_Handler();
+	}
+  /* USER CODE END CAN_Init 2 */
+
+}
+
+/**
   * @brief HRTIM1 Initialization Function
   * @param None
   * @retval None
@@ -563,7 +645,7 @@ static void MX_HRTIM1_Init(void)
   {
     Error_Handler();
   }
-  pCompareCfg.CompareValue = 2000;
+  pCompareCfg.CompareValue = 1000;
   if (HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_COMPAREUNIT_1, &pCompareCfg) != HAL_OK)
   {
     Error_Handler();
