@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include "controller_app.h"
 #include <string.h>
+#include "stdbool.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -124,7 +125,7 @@ float i_out = 0.0f;
 float i_out_offset = 0.0341796875f;
 float target_current = 0.0f;
 float target_voltage = 0.0f;
-float sp_input = 5.0f;
+float sp_input = 12.0f;
 
 //PI_Controller pi_current = {0.042412f, 86.70796f, 0.000005f, 0.0f, 4.0f};
 PI_Controller pi_current = {40.0f, 100000.0f, 0.00005f, 0.0f, MAX_DUTY_CYCLE};
@@ -133,7 +134,7 @@ PI_Controller pi_voltage = {0.1f, 40.0f, 0.0005f, 0.0f, 4.5f};
 uint8_t uart_rx_buf[64];
 uint16_t uart_rx_buf_size = 0;
 
-CAN_TxHeaderTypeDef can_tx_header = {0x123 , 0, CAN_ID_STD , CAN_RTR_DATA , 8};
+CAN_TxHeaderTypeDef can_tx_header = {0x127 , 0, CAN_ID_STD , CAN_RTR_DATA , 8};
 uint8_t can_tx_data[8] = {0};
 uint32_t can_tx_mailbox;
 
@@ -221,13 +222,20 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef* hadc){
 
 }
 
-
+bool emergency_shunt_48 = 0;
+bool emergency_shunt_24 = 0;
+bool emergency_shunt_12 = 0;
 
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan){
 	if (hcan->Instance == CAN){
 		HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &can_rx_header, can_rx_data);
 		count_check++;
 		HAL_GPIO_TogglePin(LED_G_GPIO_Port, LED_G_Pin);
+		if (can_rx_header.StdId == 0x111){
+			emergency_shunt_48 = can_rx_data[0] & 0x1;
+			emergency_shunt_24 = can_rx_data[0] >> 1 & 0x1;
+			emergency_shunt_12 = can_rx_data[0] >> 2 & 0x1;
+		}
 	}
 }
 
@@ -304,7 +312,17 @@ int main(void)
     /* USER CODE BEGIN 3 */
 		if (HAL_GetTick() - previous_milliseccond > period_time){
 
-
+			memset(can_tx_data , 0 ,8);
+			can_tx_data[4] = ((uint16_t)(v_out * 1000)) & 0xff;
+			can_tx_data[5] = ((uint16_t)(v_out * 1000)) >> 8 & 0xff;
+			can_tx_data[6] = ((uint16_t)(v_in * 1000)) & 0xff;
+			can_tx_data[7] = ((uint16_t)(v_in * 1000)) >> 8 & 0xff;
+			can_tx_header.StdId = 0x127;
+			HAL_CAN_AddTxMessage(&hcan, &can_tx_header, can_tx_data, &can_tx_mailbox);
+			memset(can_tx_data , 0 ,8);
+			can_tx_data[0] = ((uint16_t)(i_out * 1000)) & 0xff;
+			can_tx_data[1] = ((uint16_t)(i_out * 1000)) >> 8 & 0xff;
+			can_tx_header.StdId = 0x128;
 			HAL_CAN_AddTxMessage(&hcan, &can_tx_header, can_tx_data, &can_tx_mailbox);
 
 			float plot_data[16];
